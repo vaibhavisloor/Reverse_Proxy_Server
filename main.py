@@ -32,3 +32,17 @@ class ReverseProxy:
             return False  # Not rate limited
         else:
             return True  # Rate limited
+    
+    def is_malicious(self, request):
+        # Define malicious patterns
+        patterns = [
+            r"(\%27)|(\')|(\-\-)|(\%23)|(#)",  # SQL injection
+            r"/etc/passwd",                    # Access sensitive files
+            r"(\.\./\.\./)",                   # Directory traversal
+            r"<script>",                       # XSS attempts
+        ]
+        url = request.path_qs
+        for pattern in patterns:
+            if re.search(pattern, url, re.IGNORECASE):
+                return True
+        return False
