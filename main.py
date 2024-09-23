@@ -1,14 +1,14 @@
 import asyncio
-from aiohttp import web,ClientSession
-from aioredis import create_redis_pool
+from aiohttp import web, ClientSession
+import redis.asyncio as aioredis
 import re
 import time
 
 class ReverseProxy:
-    def __init__(self,backend_servers):
+    def __init__(self, backend_servers):
         self.backend_servers = backend_servers
         self.server_index = 0
-        self.client_session = ClientSession()
+        self.client_session = None  # Move initialization of ClientSession to async function
 
     def get_next_server(self):
         server = self.backend_servers[self.server_index]
@@ -25,7 +25,7 @@ class ReverseProxy:
 
         count = await self.redis.get(key)
         if count is None:
-            await self.redis.set(key, 1, expire=PERIOD)
+            await self.redis.set(key, 1, ex=PERIOD)  # use `ex` for expiration in seconds
             return False  # Not rate limited
         elif int(count) < MAX_REQUESTS:
             await self.redis.incr(key)
@@ -90,7 +90,12 @@ class ReverseProxy:
             return web.Response(status=502, text=f'Bad Gateway: {e}')
     
     async def start(self, host='0.0.0.0', port=8080):
-        self.redis = await create_redis_pool('redis://localhost')
+        # Use the new Redis API to create the connection
+        self.redis = aioredis.from_url("redis://localhost")
+
+        # Initialize ClientSession in an async function
+        self.client_session = ClientSession()
+
         app = web.Application()
         app.add_routes([web.route('*', '/{tail:.*}', self.handler)])
         runner = web.AppRunner(app)
@@ -100,15 +105,17 @@ class ReverseProxy:
         await site.start()
 
         # Keep the server running
-        while True:
-            await asyncio.sleep(3600)
+        try:
+            while True:
+                await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            print("Server shutdown in progress...")
 
     async def close(self):
-        await self.client_session.close()
-        self.redis.close()
-        await self.redis.wait_closed()
+        await self.client_session.close()  # Close the client session
+        await self.redis.close()  # Use `close` in the new API
 
-if __name__ == '__main__':
+async def main():
     backend_servers = [
         'http://localhost:8000',
         'http://localhost:8001',
@@ -116,12 +123,12 @@ if __name__ == '__main__':
     ]
 
     proxy = ReverseProxy(backend_servers)
-
-    loop = asyncio.get_event_loop()
+    
     try:
-        loop.run_until_complete(proxy.start())
-    except KeyboardInterrupt:
-        print("Shutting down proxy server...")
-        loop.run_until_complete(proxy.close())
+        await proxy.start()
     finally:
-        loop.close()
+        await proxy.close()
+
+if __name__ == '__main__':
+    # Use asyncio.run() to ensure the event loop is managed properly
+    asyncio.run(main())
